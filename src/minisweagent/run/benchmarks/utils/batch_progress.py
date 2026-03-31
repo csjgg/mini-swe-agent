@@ -22,6 +22,8 @@ from rich.progress import (
 )
 from rich.table import Table
 
+from minisweagent.utils.log import logger
+
 import minisweagent.models
 
 
@@ -161,9 +163,10 @@ class RunBatchProgressManager:
     def print_report(self) -> None:
         """Print complete list of instances and their exit statuses."""
         for status, instances in self._instances_by_exit_status.items():
-            print(f"{status}: {len(instances)}")
+            # Use logger instead of print() to avoid deadlock with Live's stdout redirection
+            logger.info(f"{status}: {len(instances)}")
             for instance in instances:
-                print(f"  {instance}")
+                logger.info(f"  {instance}")
 
     def _get_overview_data(self) -> dict:
         """Get data like exit statuses, total costs, etc."""

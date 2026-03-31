@@ -14,6 +14,7 @@ from pathlib import Path
 
 import typer
 from jinja2 import StrictUndefined, Template
+from rich.console import Console
 from rich.live import Live
 
 from minisweagent import Environment
@@ -22,8 +23,9 @@ from minisweagent.config import builtin_config_dir, get_config_from_spec
 from minisweagent.environments import get_environment
 from minisweagent.models import get_model
 from minisweagent.run.benchmarks.utils.batch_progress import RunBatchProgressManager
-from minisweagent.utils.log import add_file_handler, logger
+from minisweagent.utils.log import add_file_handler, logger, setup_logging
 from minisweagent.utils.serialize import UNSET, recursive_merge
+from swerex.utils.log import set_console as set_swerex_console
 
 _HELP_TEXT = """Run mini-SWE-agent on SWEBench instances.
 
@@ -86,7 +88,7 @@ def get_swebench_docker_image_name(instance: dict) -> str:
         # Docker doesn't allow double underscore, so we replace them with a magic token
         iid = instance["instance_id"]
         id_docker_compatible = iid.replace("__", "_1776_")
-        image_name = f"docker.io/swebench/sweb.eval.x86_64.{id_docker_compatible}:latest".lower()
+        image_name = f"swebench/sweb.eval.x86_64.{id_docker_compatible}:latest".lower()
     return image_name
 
 
@@ -98,6 +100,9 @@ def get_sb_environment(config: dict, instance: dict) -> Environment:
         env_config["image"] = image_name
     elif env_config["environment_class"] in ["singularity", "contree"]:
         env_config["image"] = "docker://" + image_name
+    elif env_config["environment_class"] == "swerex_ags":
+        # AGS SWE sandbox uses system images, just pass the image name
+        env_config["image"] = image_name
 
     env = get_environment(env_config)
     if startup_command := config.get("run", {}).get("env_startup_command"):
@@ -230,6 +235,15 @@ def main(
     # fmt: on
     output_path = Path(output)
     output_path.mkdir(parents=True, exist_ok=True)
+
+    # Create a single shared Console for Live display and all loggers.
+    # This ensures log lines are rendered above the Live progress area
+    # instead of clobbering it, while avoiding the deadlock that would
+    # occur if each module created its own Console.
+    shared_console = Console(stderr=True, force_terminal=True)
+    setup_logging(shared_console)
+    set_swerex_console(shared_console)
+
     logger.info(f"Results will be saved to {output_path}")
     add_file_handler(output_path / "minisweagent.log")
 
@@ -267,7 +281,7 @@ def main(
                 logger.error(f"Error in future for instance {instance_id}: {e}", exc_info=True)
                 progress_manager.on_uncaught_exception(instance_id, e)
 
-    with Live(progress_manager.render_group, refresh_per_second=4):
+    with Live(progress_manager.render_group, console=shared_console, refresh_per_second=4, redirect_stdout=False, redirect_stderr=False):
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
             futures = {
                 executor.submit(process_instance, instance, output_path, config, progress_manager): instance[
@@ -282,7 +296,16 @@ def main(
                 for future in futures:
                     if not future.running() and not future.done():
                         future.cancel()
-                process_futures(futures)
+                # Wait for running futures with a timeout to avoid hanging
+                try:
+                    done, not_done = concurrent.futures.wait(
+                        futures, timeout=10, return_when=concurrent.futures.ALL_COMPLETED
+                    )
+                    if not_done:
+                        logger.warning(f"{len(not_done)} tasks did not complete within timeout, forcing exit...")
+                except KeyboardInterrupt:
+                    logger.info("Force exiting...")
+                    # Let the context managers clean up
 
 
 if __name__ == "__main__":

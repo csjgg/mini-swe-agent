@@ -30,3 +30,5 @@ On top, there are a few more specialized environment classes that you can use:
 
 * **`contree`** ([`ContreeEnvironment`](../reference/environments/contree.md)) - Uses [ConTree](https://contree.dev/) for safe code execution sandboxing. Platform that built for agents and supports Git-like execution.
 
+* **`swerex_ags`** ([`SwerexAgsEnvironment`](../reference/environments/swerex_ags.md)) - [Tencent Cloud AGS](https://cloud.tencent.com/product/ags) SWE sandbox execution through [SWE-ReX](https://github.com/swe-agent/swe-rex). Provides isolated cloud sandbox environments with built-in SWE-ReX runtime, ideal for SWE-bench evaluations at scale. See the [AGS Cookbook](ags_cookbook.md) for detailed usage.
+
