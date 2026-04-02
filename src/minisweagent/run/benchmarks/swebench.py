@@ -5,6 +5,7 @@
 
 import concurrent.futures
 import json
+import logging
 import random
 import re
 import threading
@@ -23,9 +24,9 @@ from minisweagent.config import builtin_config_dir, get_config_from_spec
 from minisweagent.environments import get_environment
 from minisweagent.models import get_model
 from minisweagent.run.benchmarks.utils.batch_progress import RunBatchProgressManager
-from minisweagent.utils.log import add_file_handler, logger, setup_logging
+from minisweagent.utils.log import add_file_handler, logger, set_stream_level, setup_logging, shutdown_logging
 from minisweagent.utils.serialize import UNSET, recursive_merge
-from swerex.utils.log import set_console as set_swerex_console
+from swerex.utils.log import set_console as set_swerex_console, set_stream_level as set_swerex_stream_level
 
 _HELP_TEXT = """Run mini-SWE-agent on SWEBench instances.
 
@@ -144,7 +145,12 @@ def process_instance(
     config: dict,
     progress_manager: RunBatchProgressManager,
 ) -> None:
-    """Process a single SWEBench instance."""
+    """Process a single SWEBench instance.
+
+    Note: This runs in a worker thread. The shared Console is already configured
+    by the main thread before ThreadPoolExecutor is created, so SWE-ReX loggers
+    will use the shared Console for all their output.
+    """
     instance_id = instance["instance_id"]
     instance_dir = output_dir / instance_id
     # avoid inconsistent state if something here fails and there's leftover previous files
@@ -236,13 +242,22 @@ def main(
     output_path = Path(output)
     output_path.mkdir(parents=True, exist_ok=True)
 
-    # Create a single shared Console for Live display and all loggers.
-    # This ensures log lines are rendered above the Live progress area
-    # instead of clobbering it, while avoiding the deadlock that would
-    # occur if each module created its own Console.
+    # Share one Console with Rich Live so screen updates remain consistent.
+    # Keep the stream log volume low during batch execution; detailed logs still
+    # go to the file handler.
     shared_console = Console(stderr=True, force_terminal=True)
     setup_logging(shared_console)
+    set_stream_level(logging.WARNING)
     set_swerex_console(shared_console)
+    # Set SWE-ReX stream level to CRITICAL+1 to suppress all RichHandler output
+    # in worker threads. This avoids the ABBA deadlock between Handler._lock and
+    # Console._lock when Rich Live is refreshing. SWE-ReX logs still reach the
+    # file handler, so no information is lost.
+    set_swerex_stream_level(logging.CRITICAL + 1)
+
+    # Suppress LiteLLM's direct print() output to avoid interfering with Rich Live
+    import litellm
+    litellm.suppress_debug_info = True
 
     logger.info(f"Results will be saved to {output_path}")
     add_file_handler(output_path / "minisweagent.log")
@@ -306,6 +321,7 @@ def main(
                 except KeyboardInterrupt:
                     logger.info("Force exiting...")
                     # Let the context managers clean up
+    shutdown_logging()
 
 
 if __name__ == "__main__":

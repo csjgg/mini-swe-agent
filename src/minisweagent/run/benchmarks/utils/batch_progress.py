@@ -6,7 +6,7 @@ import collections
 import time
 from datetime import timedelta
 from pathlib import Path
-from threading import Lock
+from threading import RLock
 
 import yaml
 from rich.console import Group
@@ -51,7 +51,7 @@ class RunBatchProgressManager:
         self._spinner_tasks: dict[str, TaskID] = {}
         """We need to map instance ID to the task ID that is used by the rich progress bar."""
 
-        self._lock = Lock()
+        self._lock = RLock()
         self._start_time = time.time()
         self._total_instances = num_instances
 
@@ -113,8 +113,8 @@ class RunBatchProgressManager:
             for status, instances in sorted_items:
                 instances_str = _shorten_str(", ".join(reversed(instances)), 55)
                 t.add_row(status, str(len(instances)), instances_str)
-        assert self.render_group is not None
-        self.render_group.renderables[1] = t
+            assert self.render_group is not None
+            self.render_group.renderables[1] = t
 
     def _update_total_costs(self) -> None:
         with self._lock:
@@ -155,7 +155,8 @@ class RunBatchProgressManager:
         self.update_exit_status_table()
         self._update_total_costs()
         if self._yaml_report_path is not None:
-            self._save_overview_data_yaml(self._yaml_report_path)
+            with self._lock:
+                self._save_overview_data_yaml(self._yaml_report_path)
 
     def on_uncaught_exception(self, instance_id: str, exception: Exception) -> None:
         self.on_instance_end(instance_id, f"Uncaught {type(exception).__name__}")
@@ -176,6 +177,8 @@ class RunBatchProgressManager:
         }
 
     def _save_overview_data_yaml(self, path: Path) -> None:
-        """Save a yaml report of the instances and their exit statuses."""
-        with self._lock:
-            path.write_text(yaml.dump(self._get_overview_data(), indent=4))
+        """Save a yaml report of the instances and their exit statuses.
+
+        Caller must hold ``self._lock``.
+        """
+        path.write_text(yaml.dump(self._get_overview_data(), indent=4))
